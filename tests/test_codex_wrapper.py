@@ -130,7 +130,7 @@ args = ["--x-datadog"]
 ''',
         )
 
-    def run_wrapper(self, arguments, *, status=0, stdout="", stderr=""):
+    def run_wrapper(self, arguments, *, status=0, stdout="", stderr="", path=None):
         environment = os.environ.copy()
         environment.update(
             {
@@ -139,9 +139,9 @@ args = ["--x-datadog"]
                 "FAKE_CODEX_STATUS": str(status),
                 "FAKE_CODEX_STDOUT": stdout,
                 "FAKE_CODEX_STDERR": stderr,
-                "PATH": os.pathsep.join(
-                    (str(self.fake_bin), environment.get("PATH", ""))
-                ),
+                "PATH": path
+                if path is not None
+                else os.pathsep.join((str(self.fake_bin), environment.get("PATH", ""))),
             }
         )
         return subprocess.run(
@@ -280,6 +280,62 @@ after = "profile-after"
         effective = self.effective_config(forwarded)
         self.assertEqual(effective["settings"]["before"], "user-before")
         self.assertEqual(effective["settings"]["after"], "user-after")
+
+    def test_profile_scanner_preserves_config_values_that_look_like_profile_flags(self):
+        self.write_profile("overlay", '[settings]\nsource = "overlay"\n')
+        cases = (
+            ["-p", "manager", "-c", "--profile=missing", "-p", "overlay", "task"],
+            ["-p", "manager", "--config", "-p", "-p", "overlay", "task"],
+            ["-p", "manager", "--config=--profile=missing", "-p", "overlay", "task"],
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                forwarded = self.recorded_invocation()["argv"]
+                self.assertEqual(forwarded[0:2], ["-p", "manager"])
+                if "--config=--profile=missing" in arguments:
+                    self.assertIn("--config=--profile=missing", forwarded)
+                elif "--config" in arguments:
+                    self.assertIn(["--config", "-p"], [
+                        forwarded[index:index + 2]
+                        for index in range(len(forwarded) - 1)
+                    ])
+                else:
+                    self.assertIn(["-c", "--profile=missing"], [
+                        forwarded[index:index + 2]
+                        for index in range(len(forwarded) - 1)
+                    ])
+                self.assertNotIn("missing", forwarded)
+
+    def test_missing_codex_and_self_referential_codex_report_diagnostics(self):
+        missing = self.run_wrapper(["status"], path=str(self.root))
+
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("could not find the underlying codex executable", missing.stderr)
+        self.assertNotIn("Traceback", missing.stderr)
+
+        self_bin = self.root / "self-bin"
+        self_bin.mkdir()
+        (self_bin / "codex").symlink_to(WRAPPER)
+        recursive = self.run_wrapper(["status"], path=str(self_bin))
+
+        self.assertEqual(recursive.returncode, 2)
+        self.assertIn("resolves to codex-wrapper itself", recursive.stderr)
+        self.assertNotIn("Traceback", recursive.stderr)
+
+    def test_invalid_codex_executable_format_reports_diagnostic(self):
+        codex = self.fake_bin / "codex"
+        codex.write_bytes(b"this is not an executable format")
+        codex.chmod(0o755)
+
+        result = self.run_wrapper(["status"])
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("codex-wrapper:", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_manager_config_and_profile_overrides_preserve_nested_codex_configuration(self):
         self.write_datadog_profiles()

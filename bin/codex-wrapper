@@ -30,6 +30,11 @@ def profile_arguments(arguments: list[str]) -> list[tuple[int, int, str]]:
     index = 0
     while index < end:
         argument = arguments[index]
+        if argument in CONFIG_FLAGS:
+            # A config value is opaque to this wrapper, even when it happens
+            # to look like a profile option.
+            index += 2 if index + 1 < end else 1
+            continue
         if argument in PROFILE_FLAGS:
             if index + 1 < end:
                 profiles.append((index, index + 2, arguments[index + 1]))
@@ -162,11 +167,10 @@ def main(arguments: list[str]) -> int:
     try:
         binary = codex_binary()
         forwarded = compose_arguments(arguments)
+        os.execv(binary, [binary, *forwarded])
     except (OSError, WrapperError) as exc:
         print(f"codex-wrapper: {exc}", file=sys.stderr)
         return 2
-
-    os.execv(binary, [binary, *forwarded])
     return 0
 
 
