@@ -16,10 +16,10 @@ This is an independent community utility. It is not affiliated with or endorsed 
 
 ## Install
 
-Install the latest source from the remote GitHub repository with uv:
+Install the command with uv:
 
 ```sh
-uv tool install git+https://github.com/ibolmo/codex-wrapper.git
+uv tool install codex-wrapper
 ```
 
 The command is installed in an isolated Python environment as `codex-wrapper`. uv can manage the Python environment for the tool. Ensure uv's tool bin directory (usually `~/.local/bin`) is on your `PATH`:
@@ -37,9 +37,13 @@ uv tool upgrade codex-wrapper
 uv tool uninstall codex-wrapper
 ```
 
-To run it without a persistent install, use `uvx --from git+https://github.com/ibolmo/codex-wrapper.git codex-wrapper`. Until this project is published to a package index, install it with the Git URL; `uv tool install codex-wrapper` does not refer to this repository.
+To run it without a persistent install, use:
 
-The Git URL installs the remote repository; local edits are available there only after they are pushed. To try local changes before that, run `uv tool install .` from the checkout. This installs a uv-managed command shim. If an older version was copied directly to `~/bin/codex-wrapper`, remove that old file before using the new installation so `PATH` does not select it first.
+```sh
+uvx codex-wrapper
+```
+
+From a source checkout, run `uv tool install .` to try local changes. This installs a uv-managed command shim. If an older version was copied directly to `~/bin/codex-wrapper`, remove that old file before using the new installation so `PATH` does not select it first.
 
 ## Why combine profiles?
 
@@ -81,16 +85,8 @@ The tests use a fake Codex executable and temporary configuration files; they do
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, test, and pull request guidance.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, test, pull request, and [maintainer release guidance](CONTRIBUTING.md#maintainer-releases).
 
 ## Security reports
 
 Do not include credentials or private configuration in public issues. If GitHub private vulnerability reporting is enabled for this repository, use its **Report a vulnerability** flow. If private vulnerability reporting is disabled, open an issue asking the maintainer for a private contact channel. Do not include vulnerability details in that issue.
-
-## Releases
-
-Only stable published releases from the canonical, non-fork repository initiated by `ibolmo`, with any rerun also initiated by `ibolmo`, pass the workflow's owner guard. Update the version in `pyproject.toml`, create a matching `v<version>` tag, and publish a stable GitHub release for that tag. The workflow reruns build and test checks, then publishes the same checked wheel and source archive to PyPI using Trusted Publishing.
-
-Before the first PyPI release, configure a Trusted Publisher for PyPI project `codex-wrapper`, GitHub owner `ibolmo`, repository `codex-wrapper`, workflow `release.yml`, and environment `pypi`. For a new PyPI project, use a pending publisher; this does not reserve the project name. If the project already exists under the owner's account, configure its publisher from its PyPI project settings.
-
-Where the repository's plan and visibility support them, configure the GitHub `pypi` environment to restrict deployment to `v*` tags, require `ibolmo` as the only reviewer, leave **Prevent self-review** off so the owner can approve, and disable administrator bypass. Availability varies by plan and visibility; these settings have not been remotely verified. Repository administrators can still change workflow code or settings. No PyPI token is stored in the repository. See [PyPI's Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) and [publisher setup instructions](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).

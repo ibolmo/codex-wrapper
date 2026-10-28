@@ -27,3 +27,11 @@
 The CLI implementation is in `src/codex_wrapper/cli.py`; acceptance tests are in `tests/test_codex_wrapper.py`.
 
 For security reports, follow the [README security reporting guidance](README.md#security-reports).
+
+## Maintainer releases
+
+Only stable releases from the canonical, non-fork repository initiated by `ibolmo` pass the workflow's owner guard; reruns must also be initiated by `ibolmo`. To release, update the version in `pyproject.toml`, create the matching `v<version>` tag, and publish a stable GitHub release for that tag. The workflow reruns build and test checks, then publishes the same checked wheel and source archive to PyPI using Trusted Publishing.
+
+Before the first PyPI release, configure a Trusted Publisher for PyPI project `codex-wrapper`, GitHub owner `ibolmo`, repository `codex-wrapper`, workflow `release.yml`, and environment `pypi`. For a new PyPI project, use a pending publisher; this does not reserve the project name. If the project already exists under the owner's account, configure its publisher from its PyPI project settings.
+
+Where the repository's plan and visibility support them, configure the GitHub `pypi` environment to restrict deployment to `v*` tags, require `ibolmo` as the only reviewer, leave **Prevent self-review** off so the owner can approve, and disable administrator bypass. Availability varies by plan and visibility; these settings have not been remotely verified. Repository administrators can still change workflow code or settings. No PyPI token is stored in the repository. See [PyPI's Trusted Publishing guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/) and [publisher setup instructions](https://docs.pypi.org/trusted-publishers/adding-a-publisher/).

@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -133,7 +134,16 @@ args = ["--x-datadog"]
 ''',
         )
 
-    def run_wrapper(self, arguments, *, status=0, stdout="", stderr="", path=None):
+    def run_wrapper(
+        self,
+        arguments,
+        *,
+        status=0,
+        stdout="",
+        stderr="",
+        path=None,
+        executable=WRAPPER,
+    ):
         environment = os.environ.copy()
         environment.update(
             {
@@ -148,7 +158,7 @@ args = ["--x-datadog"]
             }
         )
         return subprocess.run(
-            [str(WRAPPER), *arguments],
+            [str(executable), *arguments],
             check=False,
             capture_output=True,
             text=True,
@@ -669,8 +679,12 @@ command = "unused"
 
         hardlink_bin = self.root / "hardlink-bin"
         hardlink_bin.mkdir()
-        os.link(WRAPPER, hardlink_bin / "codex")
-        hardlinked = self.run_wrapper(["status"], path=str(hardlink_bin))
+        local_wrapper = hardlink_bin / "codex-wrapper"
+        shutil.copy2(WRAPPER, local_wrapper)
+        os.link(local_wrapper, hardlink_bin / "codex")
+        hardlinked = self.run_wrapper(
+            ["status"], path=str(hardlink_bin), executable=local_wrapper
+        )
 
         self.assertEqual(hardlinked.returncode, 2)
         self.assertIn("resolves to codex-wrapper itself", hardlinked.stderr)
