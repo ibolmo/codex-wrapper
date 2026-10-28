@@ -158,9 +158,16 @@ def codex_binary() -> str:
     candidate = shutil.which("codex")
     if not candidate:
         raise WrapperError("could not find the underlying codex executable on PATH")
-    if Path(candidate).resolve() == Path(__file__).resolve():
+    resolved_candidate = Path(candidate).resolve()
+    launcher = Path(sys.argv[0])
+    if (
+        resolved_candidate == launcher.resolve()
+        or resolved_candidate == Path(__file__).resolve()
+        or resolved_candidate.samefile(launcher)
+        or resolved_candidate.samefile(__file__)
+    ):
         raise WrapperError("the codex executable on PATH resolves to codex-wrapper itself")
-    return str(Path(candidate).resolve())
+    return str(resolved_candidate)
 
 
 def main(arguments: list[str]) -> int:
@@ -174,5 +181,6 @@ def main(arguments: list[str]) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> None:
+    """Run the installed console script."""
     raise SystemExit(main(sys.argv[1:]))

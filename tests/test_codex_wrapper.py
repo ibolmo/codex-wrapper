@@ -8,8 +8,11 @@ import unittest
 from pathlib import Path
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-WRAPPER = REPOSITORY_ROOT / "bin" / "codex-wrapper"
+WRAPPER = Path(
+    os.environ.get(
+        "CODEX_WRAPPER_EXECUTABLE", Path(sys.executable).parent / "codex-wrapper"
+    )
+)
 
 
 DEFAULT_CONFIG = '''\
@@ -145,11 +148,12 @@ args = ["--x-datadog"]
             }
         )
         return subprocess.run(
-            [sys.executable, str(WRAPPER), *arguments],
+            [str(WRAPPER), *arguments],
             check=False,
             capture_output=True,
             text=True,
             env=environment,
+            timeout=10,
         )
 
     def recorded_invocation(self):
@@ -325,6 +329,15 @@ after = "profile-after"
         self.assertEqual(recursive.returncode, 2)
         self.assertIn("resolves to codex-wrapper itself", recursive.stderr)
         self.assertNotIn("Traceback", recursive.stderr)
+
+        hardlink_bin = self.root / "hardlink-bin"
+        hardlink_bin.mkdir()
+        os.link(WRAPPER, hardlink_bin / "codex")
+        hardlinked = self.run_wrapper(["status"], path=str(hardlink_bin))
+
+        self.assertEqual(hardlinked.returncode, 2)
+        self.assertIn("resolves to codex-wrapper itself", hardlinked.stderr)
+        self.assertNotIn("Traceback", hardlinked.stderr)
 
     def test_invalid_codex_executable_format_reports_diagnostic(self):
         codex = self.fake_bin / "codex"

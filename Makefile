@@ -1,10 +1,8 @@
-PREFIX ?= $(HOME)/bin
-PYTHON ?= python3
+PYTHON ?= uv run --no-project --with-editable . python
 
 .PHONY: install test
 install:
-	install -d "$(PREFIX)"
-	install -m 755 bin/codex-wrapper "$(PREFIX)/codex-wrapper"
+	uv tool install .
 
 test:
 	$(PYTHON) -m unittest discover -s tests -v
