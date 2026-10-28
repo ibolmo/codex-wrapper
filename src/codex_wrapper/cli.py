@@ -17,6 +17,101 @@ from typing import Any
 
 PROFILE_FLAGS = {"-p", "--profile"}
 CONFIG_FLAGS = {"-c", "--config"}
+GLOBAL_VALUE_FLAGS = {
+    "--config",
+    "--enable",
+    "--disable",
+    "--model",
+    "--local-provider",
+    "--image",
+    "--profile",
+    "--sandbox",
+    "--remote",
+    "--remote-auth-token-env",
+    "--ask-for-approval",
+    "--cd",
+    "--add-dir",
+    "--thread-source",
+    "--cyber-access-program",
+    "--output-schema",
+    "--output-last-message",
+    "--color",
+    "-c",
+    "-m",
+    "-i",
+    "-p",
+    "-s",
+    "-a",
+    "-C",
+    "-o",
+}
+# Codex 0.165.0 accepts an optional root prompt before its optional command.
+# These are the names and aliases from MultitoolCli's Subcommand enum; the
+# wrapper only needs to distinguish a root sandbox command from a prompt or
+# from a different command whose arguments may themselves contain "sandbox".
+ROOT_SUBCOMMANDS = {
+    "agents",
+    "tcp-tunnel",
+    "exec",
+    "e",
+    "review",
+    "login",
+    "logout",
+    "mcp",
+    "plugin",
+    "app-server",
+    "remote-control",
+    "app",
+    "completion",
+    "update",
+    "doctor",
+    "sandbox",
+    "debug",
+    "execpolicy",
+    "apply",
+    "a",
+    "resume",
+    "queue",
+    "archive",
+    "delete",
+    "migrate-rollouts",
+    "migrate-nfs-db",
+    "unarchive",
+    "fork",
+    "cloud",
+    "cloud-tasks",
+    "responses-api-proxy",
+    "stdio-to-uds",
+    "exec-server",
+    "features",
+    "help",
+}
+SANDBOX_VALUE_FLAGS = {
+    "--config",
+    "--enable",
+    "--disable",
+    "--cd",
+    "--permission-profile",
+    "--profile",
+    "--sandbox-state-json",
+    "--sandbox-state-readable-root",
+    "--allow-unix-socket",
+    "-c",
+    "-C",
+    "-P",
+    "-p",
+}
+MCP_ADD_VALUE_FLAGS = {
+    "--url",
+    "--env",
+    "--bearer-token-env-var",
+    "--oauth-client-id",
+    "--oauth-client-secret",
+    "--oauth-client-registration",
+    "--oauth-resource",
+}
+EXECPOLICY_VALUE_FLAGS = {"--rules", "-r"}
+EXECPOLICY_BOOLEAN_FLAGS = {"--pretty", "--resolve-host-executables"}
 BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -24,8 +119,166 @@ class WrapperError(Exception):
     """A configuration or launch error with a user-facing message."""
 
 
-def profile_arguments(arguments: list[str]) -> list[tuple[int, int, str]]:
+def _is_attached_option(argument: str, flag: str) -> bool:
+    if flag.startswith("--"):
+        return argument.startswith(f"{flag}=")
+    return argument.startswith(flag) and len(argument) > len(flag)
+
+
+def _sandbox_child_start(arguments: list[str], start: int) -> int:
+    """Return the first sandbox child-command index, or len(arguments)."""
+    index = start
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return index + 1
+        if argument in SANDBOX_VALUE_FLAGS:
+            index += 2 if index + 1 < len(arguments) else 1
+            continue
+        if any(_is_attached_option(argument, flag) for flag in SANDBOX_VALUE_FLAGS):
+            index += 1
+            continue
+        if not argument.startswith("-"):
+            return index
+        index += 1
+    return len(arguments)
+
+
+def _trailing_command_start(
+    arguments: list[str],
+    start: int,
+    end: int,
+    *,
+    required_positionals: int,
+    value_flags: set[str],
+    boolean_flags: set[str] | None = None,
+    allow_hyphen_command: bool = False,
+) -> int:
+    """Find a command captured as a trailing positional argument."""
+    index = start
+    positionals = 0
+    while index < end:
+        argument = arguments[index]
+        if argument == "--":
+            return index + 1 if positionals >= required_positionals else end
+        if argument in value_flags:
+            index += 2 if index + 1 < end else 1
+            continue
+        if boolean_flags and argument in boolean_flags:
+            index += 1
+            continue
+        if any(_is_attached_option(argument, flag) for flag in value_flags):
+            index += 1
+            continue
+        if not argument.startswith("-"):
+            positionals += 1
+            if positionals > required_positionals:
+                return index
+            index += 1
+            continue
+        if allow_hyphen_command and positionals >= required_positionals:
+            return index
+        index += 1
+    return end
+
+
+def _nested_command_start(
+    arguments: list[str], start: int, end: int, command: str
+) -> int:
+    """Find a nested command after inherited Codex global options."""
+    index = start
+    while index < end:
+        argument = arguments[index]
+        if argument == "--":
+            return end
+        if argument in GLOBAL_VALUE_FLAGS:
+            index += 2 if index + 1 < end else 1
+            continue
+        if any(_is_attached_option(argument, flag) for flag in GLOBAL_VALUE_FLAGS):
+            index += 1
+            continue
+        if not argument.startswith("-"):
+            return index if argument == command else end
+        index += 1
+    return end
+
+
+def _mcp_add_command_start(arguments: list[str], start: int, end: int) -> int:
+    """Find the trailing stdio command for `codex mcp add NAME COMMAND...`."""
+    index = _nested_command_start(arguments, start, end, "add")
+    if index >= end:
+        return end
+    return _trailing_command_start(
+        arguments,
+        index + 1,
+        end,
+        required_positionals=1,
+        value_flags=MCP_ADD_VALUE_FLAGS,
+        allow_hyphen_command=True,
+    )
+
+
+def _execpolicy_check_command_start(arguments: list[str], start: int, end: int) -> int:
+    """Find the command captured by `codex execpolicy check`."""
+    index = _nested_command_start(arguments, start, end, "check")
+    if index >= end:
+        return end
+    return _trailing_command_start(
+        arguments,
+        index + 1,
+        end,
+        required_positionals=0,
+        value_flags=EXECPOLICY_VALUE_FLAGS,
+        boolean_flags=EXECPOLICY_BOOLEAN_FLAGS,
+        allow_hyphen_command=True,
+    )
+
+
+def option_end(arguments: list[str]) -> int:
+    """Find the end of Codex options, including sandbox child arguments."""
     end = arguments.index("--") if "--" in arguments else len(arguments)
+    index = 0
+    root_positionals = 0
+    root_command_seen = False
+    while index < end:
+        argument = arguments[index]
+        if argument in {"--image", "-i"}:
+            # Codex accepts one or more separated image paths. They may look
+            # like positionals (including the word "sandbox") to this scan.
+            index += 1
+            while index < end and not arguments[index].startswith("-"):
+                index += 1
+            continue
+        if argument in GLOBAL_VALUE_FLAGS:
+            index += 2 if index + 1 < end else 1
+            continue
+        if any(_is_attached_option(argument, flag) for flag in GLOBAL_VALUE_FLAGS):
+            index += 1
+            continue
+        if not argument.startswith("-"):
+            if not root_command_seen:
+                if argument in ROOT_SUBCOMMANDS:
+                    root_command_seen = True
+                    if argument == "sandbox":
+                        end = min(end, _sandbox_child_start(arguments, index + 1))
+                    elif argument == "mcp":
+                        end = min(end, _mcp_add_command_start(arguments, index + 1, end))
+                    elif argument == "execpolicy":
+                        end = min(end, _execpolicy_check_command_start(arguments, index + 1, end))
+                elif root_positionals == 0:
+                    # MultitoolCli allows a prompt before a subcommand.
+                    root_positionals = 1
+                else:
+                    # The root parser has only one prompt positional; any
+                    # later non-command positional cannot introduce a root
+                    # subcommand after this point.
+                    root_command_seen = True
+        index += 1
+    return end
+
+
+def profile_arguments(arguments: list[str]) -> list[tuple[int, int, str]]:
+    end = option_end(arguments)
     profiles = []
     index = 0
     while index < end:
@@ -42,6 +295,10 @@ def profile_arguments(arguments: list[str]) -> list[tuple[int, int, str]]:
                 continue
         elif argument.startswith("--profile="):
             profiles.append((index, index + 1, argument.partition("=")[2]))
+        elif argument.startswith("-p") and len(argument) > 2:
+            # Preserve Codex's native short spelling, including -p=NAME.
+            name = argument[2:]
+            profiles.append((index, index + 1, name[1:] if name.startswith("=") else name))
         index += 1
     return profiles
 
@@ -63,7 +320,7 @@ def load_profile(name: str) -> dict[str, Any]:
     try:
         with path.open("rb") as profile_handle:
             contents = tomllib.load(profile_handle)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise WrapperError(f"could not read profile {name!r} at {path}: {exc}") from exc
     return contents
 
@@ -77,15 +334,20 @@ def merge_tables(target: dict[str, Any], overlay: dict[str, Any]) -> None:
             target[key] = value
 
 
+def toml_string(value: str) -> str:
+    # TOML rejects literal DEL even though json.dumps leaves it unescaped.
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+
+
 def toml_key(value: str) -> str:
-    return value if BARE_KEY.fullmatch(value) else json.dumps(value, ensure_ascii=False)
+    return value if BARE_KEY.fullmatch(value) else toml_string(value)
 
 
 def toml_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
+        return toml_string(value)
     if isinstance(value, int):
         return str(value)
     if isinstance(value, float):
@@ -128,14 +390,14 @@ def compose_arguments(arguments: list[str]) -> list[str]:
         remove_indices = {index for start, end, _ in secondary for index in range(start, end)}
         return [argument for index, argument in enumerate(arguments) if index not in remove_indices]
 
-    option_end = arguments.index("--") if "--" in arguments else len(arguments)
+    end = option_end(arguments)
     first_config = next(
         (
             index
-            for index, argument in enumerate(arguments[:option_end])
+            for index, argument in enumerate(arguments[:end])
             if argument in CONFIG_FLAGS
             or argument.startswith("--config=")
-            or argument.startswith("-c=")
+            or (argument.startswith("-c") and len(argument) > 2)
         ),
         profiles[1][0],
     )

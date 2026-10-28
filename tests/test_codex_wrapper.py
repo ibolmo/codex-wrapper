@@ -314,6 +314,343 @@ after = "profile-after"
                     ])
                 self.assertNotIn("missing", forwarded)
 
+    def test_attached_config_option_keeps_explicit_setting_after_composed_profile(self):
+        self.write_profile("native", '[settings]\nsource = "native"\n')
+        self.write_profile("overlay", '[settings]\nchoice = "profile"\n')
+        arguments = [
+            "-p", "native",
+            '-csettings.choice="explicit"',
+            "--profile=overlay",
+            "task",
+        ]
+
+        result = self.run_wrapper(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        forwarded = self.recorded_invocation()["argv"]
+        effective = self.effective_config(forwarded)
+        self.assertEqual(effective["settings"]["choice"], "explicit")
+
+    def test_attached_short_profile_forms_participate_in_composition(self):
+        self.write_profile("base", '[settings]\nbase = true\n')
+        self.write_profile("overlay", '[settings]\nchoice = "overlay"\n')
+        cases = (
+            ("-pbase", "--profile=overlay"),
+            ("-p=base", "--profile=overlay"),
+            ("-p", "base", "-poverlay"),
+            ("-p", "base", "-p=overlay"),
+        )
+
+        for profile_arguments in cases:
+            with self.subTest(profile_arguments=profile_arguments):
+                arguments = [*profile_arguments, "task"]
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                forwarded = self.recorded_invocation()["argv"]
+                self.assertEqual(self.profile_names(forwarded), ["base"])
+                effective = self.effective_config(forwarded)
+                self.assertEqual(effective["settings"]["base"], True)
+                self.assertEqual(effective["settings"].get("choice"), "overlay")
+                self.assertNotIn("--profile=overlay", forwarded)
+                self.assertNotIn("-poverlay", forwarded)
+                self.assertNotIn("-p=overlay", forwarded)
+
+    def test_invalid_utf8_overlay_reports_error_without_launching_codex(self):
+        self.write_profile("native", 'model = "native-model"\n')
+        self.record_path.unlink(missing_ok=True)
+        (self.codex_home / "invalid-utf8.config.toml").write_bytes(
+            b'model = "invalid-\xff"\n'
+        )
+
+        result = self.run_wrapper(
+            ["-p", "native", "-p", "invalid-utf8", "task"]
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("could not read profile 'invalid-utf8'", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertFalse(self.record_path.exists(), "fake Codex must not launch")
+
+    def test_sandbox_without_profiles_forwards_profile_like_child_arguments(self):
+        child_arguments = [
+            "sandbox",
+            "/usr/bin/printf",
+            "%s\\n",
+            "-pbase",
+            "-poverlay",
+            "--profile=child",
+            "-cmodel=child",
+            "--",
+        ]
+
+        result = self.run_wrapper(child_arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded_invocation()["argv"], child_arguments)
+
+    def test_sandbox_composes_profiles_before_preserving_child_arguments(self):
+        self.write_profile("native", 'model = "native-model"\n')
+        self.write_profile("overlay", 'model = "overlay-model"\n')
+        self.write_profile("child", "")
+        arguments = [
+            "-p", "native",
+            "-p", "overlay",
+            "sandbox",
+            "--cd", str(self.root),
+            "/usr/bin/printf",
+            "%s\\n",
+            "-pchild",
+            "--profile=child",
+            "-cmodel=child",
+            "--",
+        ]
+
+        result = self.run_wrapper(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        forwarded = self.recorded_invocation()["argv"]
+        self.assertEqual(
+            forwarded[:4],
+            ["-p", "native", "--config", 'model="overlay-model"'],
+        )
+        self.assertEqual(
+            forwarded[4:],
+            [
+                "sandbox",
+                "--cd", str(self.root),
+                "/usr/bin/printf",
+                "%s\\n",
+                "-pchild",
+                "--profile=child",
+                "-cmodel=child",
+                "--",
+            ],
+        )
+
+    def test_sandbox_word_in_option_value_or_prompt_does_not_start_sandbox_parsing(self):
+        self.write_profile("native", 'model = "native-model"\n')
+        self.write_profile("overlay", 'model = "overlay-model"\n')
+        cases = (
+            (
+                ["-m", "sandbox", "exec", "-p", "native", "-p", "overlay", "prompt"],
+                ["-m", "sandbox", "exec", "prompt"],
+            ),
+            (
+                ["exec", "sandbox", "--model", "some-model", "-pnative", "-poverlay"],
+                ["exec", "sandbox", "--model", "some-model"],
+            ),
+        )
+
+        for arguments, preserved_arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.record_path.unlink(missing_ok=True)
+
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                forwarded = self.recorded_invocation()["argv"]
+                self.assertEqual(self.profile_names(forwarded), ["native"])
+                self.assertEqual(
+                    [argument for argument in forwarded if argument in preserved_arguments],
+                    preserved_arguments,
+                )
+                effective = self.effective_config(forwarded)
+                self.assertEqual(effective["model"], "overlay-model")
+
+    def test_root_prompt_before_sandbox_keeps_child_profile_flags_opaque(self):
+        arguments = [
+            "hello",
+            "sandbox",
+            "/usr/bin/printf",
+            "%s\\n",
+            "-pbase",
+            "-poverlay",
+        ]
+
+        result = self.run_wrapper(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded_invocation()["argv"], arguments)
+
+    def test_separated_variadic_image_values_do_not_hide_later_profiles(self):
+        self.write_profile("base", '[settings]\nbase = true\n')
+        self.write_profile("overlay", '[settings]\nchoice = "overlay"\n')
+        cases = (
+            ["--image", "img", "sandbox", "child", "-pbase", "-poverlay", "--help"],
+            ["-i", "img", "sandbox", "child", "-pbase", "-poverlay", "--help"],
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.record_path.unlink(missing_ok=True)
+
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                forwarded = self.recorded_invocation()["argv"]
+                self.assertEqual(self.profile_names(forwarded), ["base"])
+                self.assertEqual(
+                    [item for item in forwarded if item in ("--image", "-i", "img", "sandbox", "child")],
+                    [item for item in arguments if item in ("--image", "-i", "img", "sandbox", "child")],
+                )
+                self.assertEqual(self.effective_config(forwarded)["settings"]["choice"], "overlay")
+
+    def test_attached_image_values_keep_sandbox_child_profile_flags_opaque(self):
+        cases = (
+            ["--image=img", "sandbox", "/usr/bin/printf", "%s\\n", "-pbase", "-poverlay"],
+            ["-iimg", "sandbox", "/usr/bin/printf", "%s\\n", "-pbase", "-poverlay"],
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.recorded_invocation()["argv"], arguments)
+
+    def test_mcp_add_command_arguments_are_opaque_without_root_profiles(self):
+        arguments = [
+            "mcp",
+            "add",
+            "probe",
+            "/usr/bin/printf",
+            "-pbase",
+            "-poverlay",
+            "--profile=child",
+            "-cmodel=child",
+        ]
+
+        result = self.run_wrapper(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.recorded_invocation()["argv"], arguments)
+
+    def test_mcp_add_composes_root_profiles_and_preserves_command_arguments(self):
+        self.write_profile("base", '[settings]\nbase = true\n')
+        self.write_profile("overlay", '[settings]\nchoice = "overlay"\n')
+        arguments = [
+            "-p", "base",
+            "-p", "overlay",
+            "mcp",
+            "add",
+            "probe",
+            "/usr/bin/printf",
+            "-pchild",
+            "--profile=child",
+            "-cmodel=child",
+        ]
+
+        result = self.run_wrapper(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        forwarded = self.recorded_invocation()["argv"]
+        self.assertEqual(forwarded[:3], ["-p", "base", "--config"])
+        self.assertEqual(
+            forwarded[4:],
+            [
+                "mcp",
+                "add",
+                "probe",
+                "/usr/bin/printf",
+                "-pchild",
+                "--profile=child",
+                "-cmodel=child",
+            ],
+        )
+        self.assertEqual(tomllib.loads(forwarded[3]), {"settings": {"choice": "overlay"}})
+
+    def test_execpolicy_check_command_arguments_are_opaque(self):
+        rules = self.root / "empty-rules.json"
+        rules.write_text("[]\n", encoding="utf-8")
+        cases = (
+            [
+                "execpolicy",
+                "check",
+                "--rules",
+                str(rules),
+                "/usr/bin/printf",
+                "-pbase",
+                "-poverlay",
+            ],
+            ["execpolicy", "check", "--rules", str(rules), "-pbase", "-poverlay"],
+        )
+
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.recorded_invocation()["argv"], arguments)
+
+    def test_execpolicy_global_options_before_check_leave_child_arguments_opaque(self):
+        rules = self.root / "empty-rules.json"
+        rules.write_text("[]\n", encoding="utf-8")
+        global_option_forms = (
+            ("separate short config", ["-c", 'model="x"']),
+            ("attached short config", ['-cmodel="x"']),
+            ("separate long config", ["--config", 'model="x"']),
+            ("attached long config", ['--config=model="x"']),
+            ("enable", ["--enable", "multi_agent"]),
+            ("disable", ["--disable", "multi_agent"]),
+        )
+
+        for name, global_options in global_option_forms:
+            with self.subTest(global_option=name):
+                arguments = [
+                    "execpolicy",
+                    *global_options,
+                    "check",
+                    "--rules",
+                    str(rules),
+                    "/usr/bin/printf",
+                    "-pbase",
+                    "-poverlay",
+                ]
+
+                result = self.run_wrapper(arguments)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.recorded_invocation()["argv"], arguments)
+
+    def test_escaped_del_roundtrips_in_override_values_and_quoted_keys(self):
+        self.write_profile("native", '[settings]\nbase = true\n')
+        cases = (
+            (
+                "string value",
+                '''\
+developer_instructions = "a\\u007fb"
+''',
+                {"developer_instructions": "a\x7fb"},
+            ),
+            (
+                "quoted nested key",
+                '''\
+[mcp_servers."quoted\\u007fkey"]
+command = "unused"
+''',
+                {"mcp_servers": {"quoted\x7fkey": {"command": "unused"}}},
+            ),
+        )
+
+        for case, contents, expected_config in cases:
+            with self.subTest(case=case):
+                self.record_path.unlink(missing_ok=True)
+                self.write_profile("overlay", contents)
+                result = self.run_wrapper(["-p", "native", "-p", "overlay", "task"])
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                forwarded = self.recorded_invocation()["argv"]
+                effective = {}
+                for setting in self.config_settings(forwarded):
+                    try:
+                        parsed_setting = tomllib.loads(setting)
+                    except tomllib.TOMLDecodeError as exc:
+                        self.fail(f"composed profile setting is invalid TOML: {exc}")
+                    self.merge_tables(effective, parsed_setting)
+
+                self.assertEqual(effective, expected_config)
+
     def test_missing_codex_and_self_referential_codex_report_diagnostics(self):
         missing = self.run_wrapper(["status"], path=str(self.root))
 
@@ -513,6 +850,10 @@ last_applied = "policy"
             elif argument.startswith("--profile="):
                 names.append(argument.partition("=")[2])
                 index += 1
+            elif argument.startswith("-p"):
+                profile = argument[2:]
+                names.append(profile[1:] if profile.startswith("=") else profile)
+                index += 1
             else:
                 index += 1
         return names
@@ -532,6 +873,9 @@ last_applied = "policy"
                 index += 1
             elif argument.startswith("-c="):
                 settings.append(argument.partition("=")[2])
+                index += 1
+            elif argument.startswith("-c"):
+                settings.append(argument[2:])
                 index += 1
             else:
                 index += 1
